@@ -1,23 +1,30 @@
 # TODO: structuralize this file
-
 from locust import HttpLocust, TaskSet, task
 from datetime import datetime
 import xmlrpclib
 import logging
 import random
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
 logger = logging.getLogger(__name__)
 
 # TODO: set those as parameter or read from config file
 # Configuration
-DATABASE = "odoo8"
+DATABASE = ""
 PORT = 8088
-HOST = "103.17.211.232"
-ADMIN_USER = "admin"
-ADMIN_PASSWORD = "admin"
+HOST = ""
+ADMIN_USER = ""
+ADMIN_PASSWORD = ""
 AMOUNT_PAID = 99999
-DEFAULT_PASSWORD = '123456'
+DEFAULT_PASSWORD = ''
 LINE_PER_ORDER = 6
+
+# CHROME DRIVER
+CHROME_DRIVER_PATH = '/Users/longdt/chromedriver'
+CHROME_OPTIONS = Options()
+CHROME_OPTIONS.add_argument('--headless')
+CHROME_OPTIONS.add_argument('--disable-grpu')
 
 # ODOO DATA
 USER_CREDENTIALS = []
@@ -110,42 +117,46 @@ class RPCProxy(object):
 
     def get(self, model, login=ADMIN_USER, password=ADMIN_PASSWORD):
         self.models.setdefault(login, {})
-        # if model not in self.models[login]:
         self.models[login][model] = RPCProxyOne(model, login=login, password=password)
         return self.models[login][model]
 
 
-class PosDataGenerator(object):
-    def __init__(self, pool):
-        # TODO: caching should be done in RPC object
-        self.dummy_cache = {}
+class PosAction(object):
+    def __init__(self, pool, client):
         self.pool = pool
+        self.client = client
+        self.user_name = client.pos_user_name
+        self.user_id = client.pos_user_id
         self.pos_config_obj = self.pool.get('pos.config')
         self.pos_session_obj = self.pool.get('pos.session')
         self.account_bank_statement_obj = self.pool.get('account.bank.statement')
         self.account_journal_obj = self.pool.get('account.journal')
         self.product_list = self.get_all_product()
+        self.config_id = None
+        self.session_id = None
+        self.journal_id = None
+        self.account_id = None
+        self.statement_id = None
 
     def get_all_product(self):
         return self.pool.get('product.product').search_read([[('available_in_pos', '=', True), ('active', '=', True)]], {"fields": ["id", "list_price"]})
 
-    def generate_data(self, user_data):
-        self.user_name, self.user_id = user_data
-        self.dummy_cache.setdefault(self.user_id, {})
-        pos_orders = self.generate_pos_orders()
-        return pos_orders
+    def close_session(self):
+        """ Close POS Session """
+        payload = self.create_json_payload(model='pos.session', id=self.session_id[0], signal='close')
+        self.client.post('http://localhost/web/dataset/exec_workflow', json=payload)
+        logger.info("Session ID: %s closed" % self.session_id)
 
-    def generate_pos_orders(self):
-        if 'session_id' not in self.dummy_cache[self.user_id]:
-            self.dummy_cache[self.user_id]['session_id'] = self.pos_session_obj.search([[('state', '=', 'opened'), ('user_id', '=', self.user_id)]])
-        session_id = self.dummy_cache[self.user_id]['session_id']
+    def _prepare_posorder_data(self):
+        if not self.session_id:
+            self.session_id = self.pos_session_obj.search([[('state', '=', 'opened'), ('user_id', '=', self.user_id)]])
+        session_id = self.session_id
         if not session_id:
             pos_session_obj = self.pool.get("pos.session", login=self.user_name, password=DEFAULT_PASSWORD)
             val = self.generate_session()
             logger.info("Creating session for uid: %s" % self.user_id)
-            logger.info(val)
             session_id = [pos_session_obj.create([val])]
-            self.dummy_cache[self.user_id]['session_id'] = session_id
+            self.session_id = session_id
             logger.info("Opened new session (ID: %s)" % session_id)
             pos_session_obj.open_cb([session_id])
 
@@ -155,13 +166,11 @@ class PosDataGenerator(object):
         return orders
 
     def generate_session(self):
-        if 'config_id' not in self.dummy_cache[self.user_id]:
-            self.dummy_cache[self.user_id]['config_id'] = self.get_pos_config_id()
-        config_id = self.dummy_cache[self.user_id]['config_id']
-        logger.info(self.dummy_cache)
+        if not self.config_id:
+            self.config_id = self.get_pos_config_id()
         vals = {
             'user_id': self.user_id,
-            'config_id': config_id
+            'config_id': self.config_id
         }
         return vals
 
@@ -176,16 +185,13 @@ class PosDataGenerator(object):
         return pos_config_id
 
     def _get_order_temp(self, session_id, uid):
-        if any([x not in self.dummy_cache[self.user_id] for x in ['journal_id', 'account_id', 'statement_id']]):
+        if any([getattr(self, x) is None for x in ['journal_id', 'account_id', 'statement_id']]):
             session = self.pos_session_obj.read([session_id], {'fields': ["statement_ids"]})
             cashregister = self.account_bank_statement_obj.read([[session[0]['statement_ids'][0]]], {'fields': ["journal_id"]})
             account_journal = self.account_journal_obj.read([[cashregister[0]['journal_id'][0]]], {'fields': ["default_debit_account_id"]})
-            self.dummy_cache[self.user_id]['journal_id'] = account_journal[0]['id']
-            self.dummy_cache[self.user_id]['account_id'] = account_journal[0]['default_debit_account_id'][0]
-            self.dummy_cache[self.user_id]['statement_id'] = cashregister[0]['id']
-        journal_id = self.dummy_cache[self.user_id]['journal_id']
-        account_id = self.dummy_cache[self.user_id]['account_id']
-        statement_id = self.dummy_cache[self.user_id]['statement_id']
+            self.journal_id = account_journal[0]['id']
+            self.account_id = account_journal[0]['default_debit_account_id'][0]
+            self.statement_id = cashregister[0]['id']
         total, lines = self.get_order_lines()
         return {
             'to_invoice': False,
@@ -198,11 +204,11 @@ class PosDataGenerator(object):
                 'lines': lines,
                 'statement_ids': [
                     [0, 0, {
-                        'journal_id': journal_id,
+                        'journal_id': self.journal_id,
                         'amount': AMOUNT_PAID,
                         'name': '2018-03-14 07:21:16',
-                        'account_id': account_id,
-                        'statement_id': statement_id
+                        'account_id': self.account_id,
+                        'statement_id': self.statement_id
                     }]
                 ],
                 'amount_tax': 0,
@@ -229,16 +235,41 @@ class PosDataGenerator(object):
             total += product['list_price']
         return total, lines
 
+    def create_json_payload(self, **params):
+        """ Get json payload data """
+        return {
+            "id": 73407008,  # just a random number
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": params
+        }
+
+    def create_from_ui(self):
+        """ Call to odoo's create_from_ui function """
+        posorder_data = [self._prepare_posorder_data()]
+        payload = self.create_json_payload(model='pos.order', method='create_from_ui', args=posorder_data, kwargs={})
+        pos_res = self.client.post('/web/dataset/call_kw/pos.order/create_from_ui', json=payload)
+        order_id = eval(pos_res.text)['result'][0]
+        logger.info("Created Order (ID: %s)" % order_id)
+
+    def load_page(self):
+        """ Act like browser and load POS screen """
+        browser = webdriver.Chrome(CHROME_DRIVER_PATH, chrome_options=CHROME_OPTIONS)
+        name, value = self.client.cookies.get_dict().items()[0]
+        browser.get(self.client.base_url)
+        browser.add_cookie({'name': name, 'value': value, 'domain': HOST, 'path': '/', 'expires': u'Tue, 03 Jul 2018 07:41:11 GMT', 'expiry': 1530603671})
+        browser.get(self.client.base_url + "/pos/web")
+
 
 class UserBehavior(TaskSet):
-    generator_pool = {}
-
     def on_start(self):
         """ Is called when the TaskSet is starting """
         self.login()
+        self.set_client_action()
+        self.client.action.load_page()
 
     def on_stop(self):
-        """ Is called when the TaskSet is stopping """
+        """ Is called when the TaskSet is stopped """
         self.logout()
 
     def login(self):
@@ -255,39 +286,27 @@ class UserBehavior(TaskSet):
 
     def logout(self):
         """ Logout when stop TaskSet """
-        logger.info("User %s logged out" % self.client.pos_user_name)
+        if hasattr(self.client, 'pos_user_name'):
+            logger.info("User %s logged out" % self.client.pos_user_name)
+        if hasattr(self.client, 'action'):
+            self.client.action.close_session()
         self.client.post("/web/session/logout", {})
 
-    def get_payload(self):
-        """ Get json payload data """
-        return {
-            "jsonrpc": "2.0",
-            "method": "call",
-            "params": {"model": "pos.order", "method": "create_from_ui", "args": [self.prepare_pos_data()], "kwargs": {}},
-            "id": 73407008  # just a random number
-        }
-
-    def prepare_pos_data(self):
-        """ Generate Pos Order """
-        if self.client.pos_user_id not in self.generator_pool:
-            pool = RPCProxy()
-            posdata_generator = PosDataGenerator(pool)
-            self.generator_pool[self.client.pos_user_id] = posdata_generator
-        return self.generator_pool[self.client.pos_user_id].generate_data((self.client.pos_user_name, self.client.pos_user_id))
+    def set_client_action(self):
+        pool = RPCProxy()
+        self.client.action = PosAction(pool, self.client)
 
     @task(1)
     def create_from_ui(self):
         """ Call to odoo's create_from_ui function """
-        pos_res = self.client.post('/web/dataset/call_kw/pos.order/create_from_ui', json=self.get_payload())
-        order_id = eval(pos_res.text)['result'][0]
-        logger.info("Created Order (ID: %s)" % order_id)
+        self.client.action.create_from_ui()
 
 
 class WebsiteUser(HttpLocust):
     task_set = UserBehavior
     host = 'http://%s:%s' % (HOST, PORT)
-    min_wait = 1000
-    max_wait = 3000
+    min_wait = 200000
+    max_wait = 300000
 
 
 load_users()

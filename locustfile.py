@@ -1,30 +1,31 @@
 # TODO: structuralize this file
 from locust import HttpLocust, TaskSet, task
 from datetime import datetime
-import xmlrpclib
-import logging
-import random
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+import xmlrpclib
+import random
+import time
+import logging
 
 logger = logging.getLogger(__name__)
 
 # TODO: set those as parameter or read from config file
 # Configuration
-DATABASE = ""
+DATABASE = "odoo8"
 PORT = 8088
-HOST = ""
-ADMIN_USER = ""
-ADMIN_PASSWORD = ""
+HOST = "103.17.211.232"
+ADMIN_USER = "admin"
+ADMIN_PASSWORD = "admin"
 AMOUNT_PAID = 99999
-DEFAULT_PASSWORD = ''
+DEFAULT_PASSWORD = '123456'
 LINE_PER_ORDER = 6
 
-# CHROME DRIVER
-CHROME_DRIVER_PATH = '/Users/longdt/chromedriver'
-CHROME_OPTIONS = Options()
-CHROME_OPTIONS.add_argument('--headless')
-CHROME_OPTIONS.add_argument('--disable-grpu')
+# WEB DRIVER
+# CHROME_DRIVER_PATH = '/Users/longdt/chromedriver'
+WEBDRIVER_OPTIONS = FirefoxOptions()
+WEBDRIVER_OPTIONS.add_argument('--headless')
+WEBDRIVER_OPTIONS.add_argument('--disable-grpu')
 
 # ODOO DATA
 USER_CREDENTIALS = []
@@ -143,9 +144,10 @@ class PosAction(object):
 
     def close_session(self):
         """ Close POS Session """
-        payload = self.create_json_payload(model='pos.session', id=self.session_id[0], signal='close')
-        self.client.post('http://localhost/web/dataset/exec_workflow', json=payload)
-        logger.info("Session ID: %s closed" % self.session_id)
+        if self.session_id:
+            payload = self.create_json_payload(model='pos.session', id=self.session_id[0], signal='close')
+            self.client.post('/web/dataset/exec_workflow', json=payload)
+            logger.info("Session ID: %s closed" % self.session_id)
 
     def _prepare_posorder_data(self):
         if not self.session_id:
@@ -224,7 +226,7 @@ class PosAction(object):
         l = range(len(self.product_list))
         lines = []
         total = 0
-        for i in range(LINE_PER_ORDER - 1):
+        for i in range(LINE_PER_ORDER):
             product = self.product_list[random.choice(l)]
             lines.append([0, 0, {
                 'discount': 0,
@@ -254,11 +256,16 @@ class PosAction(object):
 
     def load_page(self):
         """ Act like browser and load POS screen """
-        browser = webdriver.Chrome(CHROME_DRIVER_PATH, chrome_options=CHROME_OPTIONS)
-        name, value = self.client.cookies.get_dict().items()[0]
-        browser.get(self.client.base_url)
-        browser.add_cookie({'name': name, 'value': value, 'domain': HOST, 'path': '/', 'expires': u'Tue, 03 Jul 2018 07:41:11 GMT', 'expiry': 1530603671})
-        browser.get(self.client.base_url + "/pos/web")
+        try:
+            browser = webdriver.Firefox(firefox_options=WEBDRIVER_OPTIONS)
+            name, value = self.client.cookies.get_dict().items()[0]
+            browser.get(self.client.base_url)
+            browser.add_cookie({'name': name, 'value': value, 'domain': HOST, 'path': '/', 'expires': u'Web, 03 Jul 2018 18:41:11 GMT', 'expiry': 1530603671})
+            browser.get(self.client.base_url + "/pos/web")
+            browser.quit()
+        except Exception as e:
+            logger.info(str(e))
+            pass
 
 
 class UserBehavior(TaskSet):
@@ -266,7 +273,7 @@ class UserBehavior(TaskSet):
         """ Is called when the TaskSet is starting """
         self.login()
         self.set_client_action()
-        self.client.action.load_page()
+        # self.client.action.load_page()
 
     def on_stop(self):
         """ Is called when the TaskSet is stopped """
@@ -291,6 +298,7 @@ class UserBehavior(TaskSet):
         if hasattr(self.client, 'action'):
             self.client.action.close_session()
         self.client.post("/web/session/logout", {})
+        self.client.close()
 
     def set_client_action(self):
         pool = RPCProxy()
@@ -305,8 +313,8 @@ class UserBehavior(TaskSet):
 class WebsiteUser(HttpLocust):
     task_set = UserBehavior
     host = 'http://%s:%s' % (HOST, PORT)
-    min_wait = 200000
-    max_wait = 300000
+    min_wait = 20000
+    max_wait = 30000
 
 
 load_users()

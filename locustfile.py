@@ -126,18 +126,19 @@ class PosAction(object):
     def __init__(self, pool, client):
         self.pool = pool
         self.client = client
-        self.user_name = client.pos_user_name
-        self.user_id = client.pos_user_id
-        self.pos_config_obj = self.pool.get('pos.config')
-        self.pos_session_obj = self.pool.get('pos.session')
-        self.account_bank_statement_obj = self.pool.get('account.bank.statement')
-        self.account_journal_obj = self.pool.get('account.journal')
-        self.product_list = self.get_all_product()
+        self.user_name = None
+        self.user_id = None
         self.config_id = None
         self.session_id = None
         self.journal_id = None
         self.account_id = None
         self.statement_id = None
+
+        self.pos_config_obj = self.pool.get('pos.config')
+        self.pos_session_obj = self.pool.get('pos.session')
+        self.account_bank_statement_obj = self.pool.get('account.bank.statement')
+        self.account_journal_obj = self.pool.get('account.journal')
+        self.product_list = self.get_all_product()
 
     def get_all_product(self):
         return self.pool.get('product.product').search_read([[('available_in_pos', '=', True), ('active', '=', True)]], {"fields": ["id", "list_price"]})
@@ -267,6 +268,15 @@ class PosAction(object):
             logger.info(str(e))
             pass
 
+    def login(self, login, passw, user_id):
+        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})  # init session ?
+        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})
+        self.user_name = login
+        self.user_id = user_id
+
+    def logout(self):
+        self.client.post("/web/session/logout", {})
+
 
 class UserBehavior(TaskSet):
     def on_start(self):
@@ -285,10 +295,7 @@ class UserBehavior(TaskSet):
             login, passw, user_id = USER_CREDENTIALS.pop()
         else:
             login, passw, user_id = create_user()
-        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})  # init session ?
-        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})
-        self.client.pos_user_id = user_id
-        self.client.pos_user_name = login
+        self.client.action.login(login, passw, user_id)
         logger.info("User %s logged in" % self.client.pos_user_name)
 
     def logout(self):
@@ -297,7 +304,7 @@ class UserBehavior(TaskSet):
             logger.info("User %s logged out" % self.client.pos_user_name)
         if hasattr(self.client, 'action'):
             self.client.action.close_session()
-        self.client.post("/web/session/logout", {})
+        self.client.action.logout()
         self.client.close()
 
     def set_client_action(self):

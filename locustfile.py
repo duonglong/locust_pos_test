@@ -281,8 +281,8 @@ class PosAction(object):
 class UserBehavior(TaskSet):
     def on_start(self):
         """ Is called when the TaskSet is starting """
-        self.login()
         self.set_client_action()
+        self.login()
         # self.client.action.load_page()
 
     def on_stop(self):

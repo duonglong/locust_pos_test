@@ -97,7 +97,8 @@ class PosAction(object):
 
     def create_user(self):
         # TODO: handle those fixed data ?
-        username = "user_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
+        # TODO: find more reliable way to create login name
+        username = "user_%s%s" % (datetime.now().strftime("%Y%m%d%H%M%S"), random.randint(0, 100000))
         val = {
             'password': DEFAULT_PASSWORD,
             'country_id': 21,
@@ -313,7 +314,11 @@ class UserBehavior(TaskSet):
     @task(1)
     def create_from_ui(self):
         """ Call to odoo's create_from_ui function """
-        self.client.action.create_from_ui()
+        try:
+            self.client.action.create_from_ui()
+        except Exception as e:
+            logger.info(str(e))
+            pass
 
 
 class WebsiteUser(HttpLocust):

@@ -283,7 +283,7 @@ class UserBehavior(TaskSet):
         """ Is called when the TaskSet is starting """
         self.set_client_action()
         self.login()
-        # self.client.action.load_page()
+        self.client.action.load_page()
 
     def on_stop(self):
         """ Is called when the TaskSet is stopped """
@@ -296,12 +296,12 @@ class UserBehavior(TaskSet):
         else:
             login, passw, user_id = create_user()
         self.client.action.login(login, passw, user_id)
-        logger.info("User %s logged in" % self.client.pos_user_name)
+        logger.info("User %s logged in" % login)
 
     def logout(self):
         """ Logout when stop TaskSet """
-        if hasattr(self.client, 'pos_user_name'):
-            logger.info("User %s logged out" % self.client.pos_user_name)
+        if hasattr(self.client, 'user_name'):
+            logger.info("User %s logged out" % self.client.user_name)
         if hasattr(self.client, 'action'):
             self.client.action.close_session()
         self.client.action.logout()

@@ -47,52 +47,6 @@ def load_pos_config():
     POS_CONFIG.extend(p.get('pos.config').search([[('id', 'not in', used_config)]]))
 
 
-def create_user():
-    # TODO: handle those fixed data ?
-    username = "user_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
-    val = {
-        'password': DEFAULT_PASSWORD,
-        'country_id': 21,
-        'alias_parent_model_id': 93,
-        'alias_force_thread_id': 7,
-        'company_id': 1,
-        'type': u'contact',
-        'lang': u'en_US',
-        'alias_contact': u'everyone',
-        'company_ids': [(6, 0, [1])],
-        'alias_model_id': 93,
-        'groups_id': [(6, 0, [5, 11, 45])],
-        'alias_parent_thread_id': 7,
-        'active': True,
-        'login': username,
-        'name': username,
-        'email': username,
-        'alias_user_id': 1,
-        'category_id': [(6, 0, [])]
-    }
-    user_id = RPCProxy().get('res.users').create([val])
-    return username, DEFAULT_PASSWORD, user_id
-
-
-def create_pos_config():
-    # TODO: handle those fixed data ?
-    name = "POS_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
-    val = {
-        'stock_location_id': 12,
-        'barcode_customer': u'042*',
-        'picking_type_id': 11,
-        'company_id': 1,
-        'state': 'active',
-        'pricelist_id': 1,
-        'journal_ids': [(6, 0, [5, 6, 7])],
-        'sequence_id': 756,
-        'name': name,
-        'journal_id': 1,
-    }
-    config_id = RPCProxy().get('pos.config').create([val])
-    return config_id
-
-
 class RPCProxyOne(object):
     """
     Simple XMLRPC client
@@ -138,7 +92,52 @@ class PosAction(object):
         self.pos_session_obj = self.pool.get('pos.session')
         self.account_bank_statement_obj = self.pool.get('account.bank.statement')
         self.account_journal_obj = self.pool.get('account.journal')
+        self.res_users_obj = self.pool.get('res.users')
         self.product_list = self.get_all_product()
+
+    def create_user(self):
+        # TODO: handle those fixed data ?
+        username = "user_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
+        val = {
+            'password': DEFAULT_PASSWORD,
+            'country_id': 21,
+            'alias_parent_model_id': 93,
+            'alias_force_thread_id': 7,
+            'company_id': 1,
+            'type': u'contact',
+            'lang': u'en_US',
+            'alias_contact': u'everyone',
+            'company_ids': [(6, 0, [1])],
+            'alias_model_id': 93,
+            'groups_id': [(6, 0, [5, 11, 45])],
+            'alias_parent_thread_id': 7,
+            'active': True,
+            'login': username,
+            'name': username,
+            'email': username,
+            'alias_user_id': 1,
+            'category_id': [(6, 0, [])]
+        }
+        user_id = self.res_users_obj.create([val])
+        return username, DEFAULT_PASSWORD, user_id
+
+    def create_pos_config(self):
+        # TODO: handle those fixed data ?
+        name = "POS_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
+        val = {
+            'stock_location_id': 12,
+            'barcode_customer': u'042*',
+            'picking_type_id': 11,
+            'company_id': 1,
+            'state': 'active',
+            'pricelist_id': 1,
+            'journal_ids': [(6, 0, [5, 6, 7])],
+            'sequence_id': 756,
+            'name': name,
+            'journal_id': 1,
+        }
+        config_id =self.pos_config_obj.create([val])
+        return config_id
 
     def get_all_product(self):
         return self.pool.get('product.product').search_read([[('available_in_pos', '=', True), ('active', '=', True)]], {"fields": ["id", "list_price"]})
@@ -181,7 +180,7 @@ class PosAction(object):
         if len(POS_CONFIG) > 0:
             pos_config_id = POS_CONFIG.pop()
         else:
-            pos_config_id = create_pos_config()
+            pos_config_id = self.create_pos_config()
         if not pos_config_id:
             # Raise error
             pass
@@ -269,7 +268,7 @@ class PosAction(object):
             pass
 
     def login(self, login, passw, user_id):
-        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})  # init session ?
+        # self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})  # init session ?
         self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})
         self.user_name = login
         self.user_id = user_id
@@ -283,7 +282,7 @@ class UserBehavior(TaskSet):
         """ Is called when the TaskSet is starting """
         self.set_client_action()
         self.login()
-        self.client.action.load_page()
+        # self.client.action.load_page()
 
     def on_stop(self):
         """ Is called when the TaskSet is stopped """
@@ -294,7 +293,7 @@ class UserBehavior(TaskSet):
         if len(USER_CREDENTIALS) > 0:
             login, passw, user_id = USER_CREDENTIALS.pop()
         else:
-            login, passw, user_id = create_user()
+            login, passw, user_id = self.client.action.create_user()
         self.client.action.login(login, passw, user_id)
         logger.info("User %s logged in" % login)
 
@@ -304,7 +303,7 @@ class UserBehavior(TaskSet):
             logger.info("User %s logged out" % self.client.user_name)
         if hasattr(self.client, 'action'):
             self.client.action.close_session()
-        self.client.action.logout()
+            self.client.action.logout()
         self.client.close()
 
     def set_client_action(self):

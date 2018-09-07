@@ -1,3 +1,4 @@
+# UPDATE res_users SET password_crypt = '$pbkdf2-sha512$19000$pbT2vrfW.v9/z7nX.t/7fw$Y0PDwpTiaLpER2vPpaViuaDfcUWKmnErFyIdN1p0xkxKBPaJvJSLQHbtHFezAZW3sF47kQZg1e4fl9DzsIdrHw';
 # TODO: structuralize this file
 from locust import HttpLocust, TaskSet, task
 from datetime import datetime

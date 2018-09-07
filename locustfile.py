@@ -5,18 +5,19 @@ from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium import webdriver
 import xmlrpclib
 import random
-import time
 import logging
+from bs4 import BeautifulSoup
+import copy
 
 logger = logging.getLogger(__name__)
 
 # TODO: set those as parameter or read from config file
 # Configuration
-DATABASE = "odoo8"
-PORT = 8088
-HOST = "103.17.211.232"
-ADMIN_USER = "admin"
-ADMIN_PASSWORD = "admin"
+DATABASE = "GS_ERP_P1_GOLIVE_UAT_BLANK"
+PORT = 80
+HOST = "localhost"
+ADMIN_USER = "superadmin"
+ADMIN_PASSWORD = "123456"
 AMOUNT_PAID = 99999
 DEFAULT_PASSWORD = '123456'
 LINE_PER_ORDER = 6
@@ -29,22 +30,19 @@ WEBDRIVER_OPTIONS.add_argument('--disable-grpu')
 
 # ODOO DATA
 USER_CREDENTIALS = []
-POS_CONFIG = []
+POS_CONFIGS = []
 
 
 def load_users():
     """ Populate user list """
-    system_users = [3, 5, 6, 4, 1]
-    users = RPCProxy().get('res.users').search_read([[('id', 'not in', system_users)]], {"fields": ["id", "login"], "order": "name"})
-    for user in users:
-        USER_CREDENTIALS.append((user['login'], DEFAULT_PASSWORD, user['id']))
-
-
-def load_pos_config():
-    p = RPCProxy()
-    all_session = p.get('pos.session').search_read([[('state', '!=', 'closed')]], {'fields': ['config_id']})
-    used_config = [x['config_id'][0] for x in all_session]
-    POS_CONFIG.extend(p.get('pos.config').search([[('id', 'not in', used_config)]]))
+    outlet_datas = RPCProxy().get('br_multi_outlet.outlet').search_read([[]], {"fields": ["id", "oultet_pic1", "oultet_pic2", "oultet_pic3"], "order": "name", "limit": 1})
+    for outlet in outlet_datas:
+        config = RPCProxy().get('pos.config').search_read([[('outlet_id', '=', outlet['id'])]], {"fields": ["id", "pricelist_id"], "order": "name"})
+        user_id = outlet['oultet_pic1'] and outlet['oultet_pic1'][0] or outlet['oultet_pic2'] and outlet['oultet_pic2'][0] or outlet['oultet_pic3'] and outlet['oultet_pic3'][0]
+        user = RPCProxy().get('res.users').search_read([[('id', '=', user_id)]], {"fields": ["id", "login"], "order": "name"})
+        if user:
+            logger.info(">>>> Getting data for user: %s" % user[0]['login'])
+            USER_CREDENTIALS.append((user[0]['login'], DEFAULT_PASSWORD, user_id, config[0], outlet))
 
 
 class RPCProxyOne(object):
@@ -93,55 +91,45 @@ class PosAction(object):
         self.account_bank_statement_obj = self.pool.get('account.bank.statement')
         self.account_journal_obj = self.pool.get('account.journal')
         self.res_users_obj = self.pool.get('res.users')
-        self.product_list = self.get_all_product()
 
-    def create_user(self):
-        # TODO: handle those fixed data ?
-        # TODO: find more reliable way to create login name
-        username = "user_%s%s" % (datetime.now().strftime("%Y%m%d%H%M%S"), random.randint(0, 100000))
-        val = {
-            'password': DEFAULT_PASSWORD,
-            'country_id': 21,
-            'alias_parent_model_id': 93,
-            'alias_force_thread_id': 7,
-            'company_id': 1,
-            'type': u'contact',
-            'lang': u'en_US',
-            'alias_contact': u'everyone',
-            'company_ids': [(6, 0, [1])],
-            'alias_model_id': 93,
-            'groups_id': [(6, 0, [5, 11, 45])],
-            'alias_parent_thread_id': 7,
-            'active': True,
-            'login': username,
-            'name': username,
-            'email': username,
-            'alias_user_id': 1,
-            'category_id': [(6, 0, [])]
-        }
-        user_id = self.res_users_obj.create([val])
-        return username, DEFAULT_PASSWORD, user_id
-
-    def create_pos_config(self):
-        # TODO: handle those fixed data ?
-        name = "POS_%s" % datetime.now().strftime("%Y%m%d%H%M%S")
-        val = {
-            'stock_location_id': 12,
-            'barcode_customer': u'042*',
-            'picking_type_id': 11,
-            'company_id': 1,
-            'state': 'active',
-            'pricelist_id': 1,
-            'journal_ids': [(6, 0, [5, 6, 7])],
-            'sequence_id': 756,
-            'name': name,
-            'journal_id': 1,
-        }
-        config_id =self.pos_config_obj.create([val])
-        return config_id
 
     def get_all_product(self):
-        return self.pool.get('product.product').search_read([[('available_in_pos', '=', True), ('active', '=', True)]], {"fields": ["id", "list_price"]})
+        recipes = self.pool.get('br.menu.name.recipe').search_read([[]], {"fields": ['id', 'times', 'applied_for', 'product_qty', 'is_topping', 'categ_ids', 'product_menu_id', 'rule_ids'], 'context': {'load_rule': True}})
+        menu_names = self.pool.get('product.product').search_read([[('available_in_pos', '=', True), ('active', '=', True), ('is_menu', '=', True)]], {"fields": ["id", "list_price", "categ_id", "is_menu", "product_recipe_lines", "name", "price"], "context": {'pricelist': self.config['pricelist_id'][0], 'load_menu_name': True}})
+        products = self.pool.get('product.product').search_read([[('is_menu', '=', False)]], {"fields": ["id", "list_price", "categ_id", "is_menu", "product_recipe_lines", "name", "price"], "context": {'pricelist': self.config['pricelist_id'][0]}})
+        recipe_pricelist = self.pool.get('product.pricelist').get_ls_price([[]])
+        recipe_pricelist_categ = self.pool.get('product.pricelist').get_ls_price_categ([[]])
+        recipe_pricelist.extend(recipe_pricelist_categ)
+        recipes_by_id = {}
+        products_by_categ_id = {}
+        product_by_id = {}
+        recipe_price = {}
+        for pricelist in recipe_pricelist:
+            pricelist_id, _, fix_price, _, recipe_id = pricelist
+            if pricelist_id == self.config['pricelist_id'][0]:
+                recipe_price[recipe_id] = fix_price
+        for menu in menu_names:
+            menu['flavours'] = []
+            for r in menu['product_recipe_lines']:
+                recipes_by_id[r] = {}
+                menu['flavours'].append(recipes_by_id[r])
+        for p in products:
+            products_by_categ_id.setdefault(p['categ_id'][0], [])
+            products_by_categ_id[p['categ_id'][0]].append(p)
+            product_by_id[p['id']] = p
+        for recipe in recipes:
+            if recipe['id'] in recipes_by_id:
+                if recipe['applied_for'] == 'product' and recipe['rules']:
+                    for rule in recipe['rules']:
+                        rule['product'] = product_by_id[rule['product_id'][0]]
+                elif recipe['applied_for'] == 'category':
+                    for categ in recipe['categ_ids']:
+                        if categ in products_by_categ_id:
+                            prods = products_by_categ_id[categ]
+                            recipe['rules'] = [{'id': recipe['id'], 'product': x, 'product_qty': recipe['product_qty']} for x in prods]
+                recipe['price'] = recipe_price[recipe['id']] if recipe['id'] in recipe_price else 0
+                recipes_by_id[recipe['id']].update(recipe)
+        return menu_names
 
     def close_session(self):
         """ Close POS Session """
@@ -153,52 +141,44 @@ class PosAction(object):
     def _prepare_posorder_data(self):
         if not self.session_id:
             self.session_id = self.pos_session_obj.search([[('state', '=', 'opened'), ('user_id', '=', self.user_id)]])
-        session_id = self.session_id
-        if not session_id:
+        if not self.session_id:
             pos_session_obj = self.pool.get("pos.session", login=self.user_name, password=DEFAULT_PASSWORD)
             val = self.generate_session()
             logger.info("Creating session for uid: %s" % self.user_id)
             session_id = [pos_session_obj.create([val])]
             self.session_id = session_id
             logger.info("Opened new session (ID: %s)" % session_id)
-            pos_session_obj.open_cb([session_id])
+            pos_session_obj.wkf_action_open([self.session_id])
 
         orders = []
         uid = "%s-%s" % (datetime.now().strftime("%y%m%d%H%M%S"), self.user_id)
-        orders.append(self._get_order_temp(session_id, uid))
+        orders.append(self._get_order_temp(self.session_id, uid))
         return orders
 
     def generate_session(self):
-        if not self.config_id:
-            self.config_id = self.get_pos_config_id()
         vals = {
             'user_id': self.user_id,
-            'config_id': self.config_id
+            'config_id': self.config_id,
+            'outlet_id': self.outlet_id
         }
         return vals
 
-    def get_pos_config_id(self):
-        if len(POS_CONFIG) > 0:
-            pos_config_id = POS_CONFIG.pop()
-        else:
-            pos_config_id = self.create_pos_config()
-        if not pos_config_id:
-            # Raise error
-            pass
-        return pos_config_id
-
     def _get_order_temp(self, session_id, uid):
-        if any([getattr(self, x) is None for x in ['journal_id', 'account_id', 'statement_id']]):
-            session = self.pos_session_obj.read([session_id], {'fields': ["statement_ids"]})
+        if any([getattr(self, x) is None for x in ['journal_id', 'account_id', 'statement_id', 'outlet_id']]):
+            session = self.pos_session_obj.read([session_id], {'fields': ["statement_ids", "outlet_id"]})
             cashregister = self.account_bank_statement_obj.read([[session[0]['statement_ids'][0]]], {'fields': ["journal_id"]})
             account_journal = self.account_journal_obj.read([[cashregister[0]['journal_id'][0]]], {'fields': ["default_debit_account_id"]})
             self.journal_id = account_journal[0]['id']
             self.account_id = account_journal[0]['default_debit_account_id'][0]
             self.statement_id = cashregister[0]['id']
+            self.outlet_id = session[0]['outlet_id'][0]
         total, lines = self.get_order_lines()
         return {
             'to_invoice': False,
             'data': {
+                'use_voucher': [],
+                'creation_date': '2018-08-28 10:30:42',
+                'time_spend': 28,
                 'user_id': self.user_id,
                 'name': 'Order %s' % uid,
                 'partner_id': False,
@@ -211,14 +191,24 @@ class PosAction(object):
                         'amount': AMOUNT_PAID,
                         'name': '2018-03-14 07:21:16',
                         'account_id': self.account_id,
-                        'statement_id': self.statement_id
+                        'statement_id': self.statement_id,
+                        'voucher_code': False,
+                        'unredeem_value': 0,
                     }]
                 ],
                 'amount_tax': 0,
                 'uid': uid,
                 'amount_return': AMOUNT_PAID - total,
                 'sequence_number': 15,
-                'amount_total': total
+                'amount_total': total,
+                'note': u'',
+                'outlet_id': self.outlet_id,
+                'start_time': '2018-08-28 10:02:04',
+                'discount_payment': {},
+                'activity_sequence': 0,
+                'invoice_no': uid,
+                'fiscal_position_id': False,
+                'origin_total': total
             },
             'id': uid
         }
@@ -231,11 +221,70 @@ class PosAction(object):
             product = self.product_list[random.choice(l)]
             lines.append([0, 0, {
                 'discount': 0,
-                'price_unit': product['list_price'],
+                'price_unit': product['price'],
                 'product_id': product['id'],
-                'qty': 1
+                'qty': 1,
+                'is_bundle_item': False,
+                'bill_amount': False,
+                'voucher': [],
+                'promotion_id': False,
+                'bill_promotion_ids': [],
+                'id': i,
+                'non_sale': False,
+                'product_category_id': False,
+                'pricelist_id': self.config['pricelist_id'][0],
+                'rate_promotion': False,
+                'tax_ids': [[6, False, [1]]],
+                'show_in_cart': True,
+                'user_promotion': False,
+                'bill_type': False,
+                'price_flavor': False,
+                'is_flavour_item': False,
+                'bom_line_id': False,
+                'bom_quantity': False,
+                'discount_amount': False,
+                'product_master_id': False,
+                'product_promotion_id': False,
+                'error': False,
+                'origin_price': product['price'],
+                'min_bill_apply': False
             }])
-            total += product['list_price']
+            for flavour in product['flavours']:
+                for j in range(flavour['times']):
+                    rule = flavour['rules'][random.choice(range(len(flavour['rules'])))]
+                    val = {
+                        'is_bundle_item': False,
+                        'bill_amount': False,
+                        'price_unit': flavour['price'],
+                        'qty': rule['product_qty'],
+                        'voucher': [],
+                        'promotion_id': False,
+                        'total_qty': rule['product_qty'],
+                        'bill_promotion_ids': [],
+                        'id': 6,
+                        'non_sale': False,
+                        'product_category_id': False,
+                        'pricelist_id': self.config['pricelist_id'][0],
+                        'rate_promotion': False,
+                        'tax_ids': [[6, False, [1]]],
+                        'show_in_cart': False,
+                        'user_promotion': False,
+                        'bill_type': False,
+                        'price_flavor': flavour['price'],
+                        'discount': 0,
+                        'is_flavour_item': True,
+                        'bom_line_id': rule['id'],
+                        'bom_quantity': 1,
+                        'discount_amount': False,
+                        'product_master_id': product['id'],
+                        'product_id': rule['product']['id'],
+                        'product_promotion_id': False,
+                        'error': False,
+                        'origin_price': flavour['price'],
+                        'min_bill_apply': False
+                    }
+                    lines.append([0, 0, val])
+            total += product['price']
         return total, lines
 
     def create_json_payload(self, **params):
@@ -244,7 +293,8 @@ class PosAction(object):
             "id": 73407008,  # just a random number
             "jsonrpc": "2.0",
             "method": "call",
-            "params": params
+            "params": params,
+            "csrf_token": self.csrf_token
         }
 
     def create_from_ui(self):
@@ -257,6 +307,7 @@ class PosAction(object):
 
     def load_page(self):
         """ Act like browser and load POS screen """
+        browser = webdriver.PhantomJS()
         try:
             browser = webdriver.Firefox(firefox_options=WEBDRIVER_OPTIONS)
             name, value = self.client.cookies.get_dict().items()[0]
@@ -268,14 +319,28 @@ class PosAction(object):
             logger.info(str(e))
             pass
 
-    def login(self, login, passw, user_id):
-        # self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})  # init session ?
-        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE})
+    def set_crfs_token(self):
+        logger.info("Getting CRFS TOKEN")
+        html = self.client.get("/web?db=%s" % DATABASE).content
+        soup = BeautifulSoup(html, "html.parser")
+        inp = soup.find("input", {"name": 'csrf_token'})
+        self.csrf_token = inp.attrs['value']
+        logger.info(">>>> %s" %self.csrf_token)
+
+
+    def login(self, login, passw, user_id, config, outlet):
+        self.set_crfs_token()
+        self.client.post("/web/login", {'login': login, 'password': passw, 'db': DATABASE, 'csrf_token': self.csrf_token})
         self.user_name = login
         self.user_id = user_id
+        self.config_id = config['id']
+        self.outlet_id = outlet['id']
+        self.outlet = outlet
+        self.config = config
+        self.product_list = self.get_all_product()
 
     def logout(self):
-        self.client.post("/web/session/logout", {})
+        self.client.post("/web/session/logout", {'csrf_token': self.csrf_token})
 
 
 class UserBehavior(TaskSet):
@@ -292,11 +357,9 @@ class UserBehavior(TaskSet):
     def login(self):
         """ Call to host's login action """
         if len(USER_CREDENTIALS) > 0:
-            login, passw, user_id = USER_CREDENTIALS.pop()
-        else:
-            login, passw, user_id = self.client.action.create_user()
-        self.client.action.login(login, passw, user_id)
-        logger.info("User %s logged in" % login)
+            login, passw, user_id, config, outlet = USER_CREDENTIALS.pop()
+            self.client.action.login(login, passw, user_id, config, outlet)
+            logger.info("User %s logged in" % login)
 
     def logout(self):
         """ Logout when stop TaskSet """
@@ -329,8 +392,7 @@ class WebsiteUser(HttpLocust):
 
 
 load_users()
-load_pos_config()
 
 if __name__ == '__main__':
-    for i in range(10):
+    for i in range(1):
         WebsiteUser().run()

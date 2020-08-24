@@ -1,0 +1,8 @@
+/home/longdt/PycharmProjects/locust_pos_test/venv/lib/python3.6/site-packages/xmlrpclib.py
+/home/longdt/PycharmProjects/locust_pos_test/venv/lib/python3.6/site-packages/SimpleXMLRPCServer.py
+/home/longdt/PycharmProjects/locust_pos_test/venv/lib/python3.6/site-packages/__pycache__/xmlrpclib.cpython-36.pyc
+/home/longdt/PycharmProjects/locust_pos_test/venv/lib/python3.6/site-packages/__pycache__/SimpleXMLRPCServer.cpython-36.pyc
+/home/longdt/PycharmProjects/locust_pos_test/venv/bin/xmlrpc_handler.py
+/home/longdt/PycharmProjects/locust_pos_test/venv/bin/echotest.py
+/home/longdt/PycharmProjects/locust_pos_test/venv/bin/xmlrpcserver.py
+/home/longdt/PycharmProjects/locust_pos_test/venv/lib/python3.6/site-packages/xmlrpclib-1.0.1.egg-info

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
+    <data-source source="LOCAL" name="ampm_live_1703_2@103.17.211.60" uuid="75d57ffd-9f20-4b49-be90-481d2ba469d2">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://103.17.211.60:5435/ampm_live_1703_2</jdbc-url>
+    </data-source>
+  </component>
+</project>
